@@ -16,16 +16,22 @@
 // overwrite _start().
 #![cfg_attr(not(test), no_main)]
 
+/// Bindgen generated FFI bindings and test cases
+pub mod bindings;
 /// Initialize BIOS for the guest
 pub mod bios;
 /// Prepare and start SMP
 pub mod cpu;
+/// Crypto API
+pub mod crypto;
 /// Global constants
 pub mod globals;
 /// Prepare page table, handle memory (de)allocations
 pub mod mem;
 /// Implementation of SVSM protocols and calls
 pub mod protocols;
+/// PSP firmware messages
+pub mod psp;
 /// Handle requests from the SVSM guest
 pub mod svsm_request;
 /// Auxiliary functions and macros
@@ -33,15 +39,19 @@ pub mod util;
 /// Handle the list of VMSA pages
 pub mod vmsa_list;
 /// Wrappers for external dependencies
+#[cfg(not(test))]
 pub mod wrapper;
 
 extern crate alloc;
+
+use psp::request::CertsBuf;
 
 use crate::bios::start_bios;
 use crate::cpu::rmpadjust;
 use crate::cpu::*;
 use crate::globals::*;
 use crate::mem::*;
+use crate::psp::request::snp_guest_request_init;
 use crate::svsm_request::svsm_request_loop;
 use crate::util::*;
 use crate::vmsa::*;
@@ -144,6 +154,63 @@ pub extern "C" fn svsm_main() -> ! {
 
     // Initialize and start APs
     smp_init();
+
+    // Initialize resources for SNP_GUEST_REQUEST messages
+    snp_guest_request_init();
+
+    let buf: x86_64::addr::VirtAddr = mem::mem_allocate(0x4000).unwrap();
+    let mut certs: CertsBuf = CertsBuf::new(buf, 0x4000usize);
+    let mut psp_rc: u64 = 0;
+    let mut data: [u8; 64] = [0u8; 64];
+    data[0] = 0x31;
+    data[1] = 0x32;
+    data[2] = 0x33;
+    data[4] = 0x34;
+
+    // Test extended attestation report request
+    let result: Result<psp::msg_report::SnpReportResponse, u64> =
+        psp::request::get_report(&data, &mut psp_rc, Some(&mut certs));
+
+    if let Ok(resp) = result {
+        prints!(
+            "INFO: Report, {} bytes, vmpl {}\n",
+            { resp.report_size() },
+            { resp.report().vmpl() }
+        );
+        prints!("INFO:     report_id: {:x?}\n", {
+            resp.report().report_id()
+        });
+        prints!("INFO:     report_data: {:x?}\n", {
+            resp.report().report_data()
+        });
+
+        let sample: *const [u8; 500] = buf.as_ptr() as *const [u8; 500];
+        prints!("INFO: certs sample {:x?}\n", { unsafe { *sample } });
+    }
+
+    data[0] = 0x35;
+    data[1] = 0x36;
+    data[2] = 0x37;
+    data[4] = 0x38;
+    psp_rc = 0;
+
+    // Test attestation report request
+    let result: Result<psp::msg_report::SnpReportResponse, u64> =
+        psp::request::get_report(&data, &mut psp_rc, None);
+
+    if let Ok(resp) = result {
+        prints!(
+            "INFO: Report, {} bytes, vmpl {}\n",
+            { resp.report_size() },
+            { resp.report().vmpl() }
+        );
+        prints!("INFO:     report_id: {:x?}\n", {
+            resp.report().report_id()
+        });
+        prints!("INFO:     report_data: {:x?}\n", {
+            resp.report().report_data()
+        });
+    }
 
     // Load BIOS
     start_bios();
